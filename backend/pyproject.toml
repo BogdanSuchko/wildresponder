@@ -1,0 +1,18 @@
+[project]
+name = "wb-feedback-responder"
+version = "0.1.0"
+description = "Automatic feedback and question responder for Wildberries"
+authors = [{ name = "AI Assistant" }]
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "python-dotenv",
+    "requests",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "black",
+    "ruff",
+] 

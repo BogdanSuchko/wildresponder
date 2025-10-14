@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+requests
+httpx
+openai>=1.30.0

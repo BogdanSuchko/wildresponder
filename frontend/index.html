@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automatic Feedback Responder</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-background"></div>
+    
+    <div class="app-container">
+        <header class="app-header">
+            <div class="logo-container">
+                <div class="logo-icon"><i class="fa-solid fa-comment-dots"></i></div>
+                <h1>WILDRESPONDER</h1>
+            </div>
+            <nav class="tabs">
+                <button class="tab-button active" data-tab="feedbacks">
+                    <i class="fa-solid fa-star"></i> Отзывы
+                </button>
+                <button class="tab-button" data-tab="questions">
+                    <i class="fa-solid fa-circle-question"></i> Вопросы
+                </button>
+            </nav>
+        </header>
+
+        <div class="content-wrapper">
+            <div id="feedbacks" class="tab-content active">
+                <div id="feedbacks-loader" class="loader"></div>
+                <p id="feedbacks-empty" class="empty-state" style="display: none;">Нет новых отзывов.</p>
+                <div class="carousel-viewport">
+                    <div id="feedbacks-slider" class="carousel-slider">
+                        <!-- Feedback cards will be injected here -->
+                    </div>
+                </div>
+            </div>
+
+            <div id="questions" class="tab-content">
+                <div id="questions-loader" class="loader"></div>
+                <p id="questions-empty" class="empty-state" style="display: none;">Нет новых вопросов.</p>
+                <div class="carousel-viewport">
+                    <div id="questions-slider" class="carousel-slider">
+                        <!-- Question cards will be injected here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="image-overlay" class="image-overlay">
+        <span class="close-btn">&times;</span>
+        <img class="overlay-content" id="overlay-img">
+    </div>
+
+    <template id="item-template">
+        <div class="item-card">
+            <div class="item-card-content">
+            <div class="item-header">
+                <div class="product-info">
+                    <div class="product-thumbnail-wrapper">
+                        <img src="" alt="Product" class="product-thumbnail">
+                    </div>
+                    <a class="product-link" href="#" target="_blank" rel="noopener noreferrer">
+                        <span class="product-name"><i class="fa-solid fa-box"></i> <span class="name-text">Название товара</span></span>
+                        <span class="item-rating"></span>
+                    </a>
+                </div>
+                <span class="item-date"><i class="fa-regular fa-calendar"></i> <span class="date-text"></span></span>
+            </div>
+            <div class="item-content">
+                <p class="item-text"></p>
+            </div>
+            <div class="advantages-section" style="display: none;">
+                <div class="advantages-title">Преимущества, которые отметил пользователь:</div>
+                <div class="advantages-chips"></div>
+            </div>
+            <div class="response-section">
+                <div class="response-header">
+                    <span class="response-label"><i class="fa-solid fa-reply"></i> Ваш ответ</span>
+                </div>
+                <div class="response-choices-container"></div>
+                <textarea class="response-textarea" rows="5" placeholder="Здесь будет сгенерированный ответ..."></textarea>
+                <div class="response-controls">
+                    
+                    <div class="prompt-container">
+                        <i class="fa-solid fa-lightbulb prompt-icon"></i>
+                        <input type="text" class="prompt-input" placeholder="Особые указания для ИИ (необязательно)">
+                    </div>
+                    <div class="action-buttons">
+                        <button class="regenerate-btn"><i class="fa-solid fa-sync"></i> Повторить</button>
+                        <button class="send-btn"><i class="fa-solid fa-paper-plane"></i> Ответить</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <div class="carousel-nav" id="feedbacks-nav">
+        <button class="nav-btn prev" data-type="feedbacks"><i class="fa-solid fa-chevron-left"></i></button>
+        <span class="counter" id="feedbacks-counter">0 / 0</span>
+        <button class="nav-btn next" data-type="feedbacks"><i class="fa-solid fa-chevron-right"></i></button>
+    </div>
+    <div class="carousel-nav" id="questions-nav" style="display: none;">
+        <button class="nav-btn prev" data-type="questions"><i class="fa-solid fa-chevron-left"></i></button>
+        <span class="counter" id="questions-counter">0 / 0</span>
+        <button class="nav-btn next" data-type="questions"><i class="fa-solid fa-chevron-right"></i></button>
+    </div>
+
+    <!-- AI Choices Modal -->
+    <div class="ai-modal" id="ai-modal">
+        <div class="ai-modal-inner">
+            <span class="close-btn" id="ai-modal-close">&times;</span>
+            <div class="ai-choices" id="ai-choices"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html> 
