@@ -103,15 +103,13 @@ async def generate_multiple_responses(payload: GenerateResponsePayload):
     # Проверяем кэш только если это не принудительная регенерация И нет кастомного промпта
     if not payload.force and not payload.prompt and payload.id in response_cache:
         print(f"Returning cached response for {payload.id}")
-        # Возвращаем один кэшированный ответ для всех моделей
         cached_response = response_cache[payload.id]
         return {
-            "gemini": cached_response,
-            "gemini_v2": cached_response,
-            "gemini_v3": cached_response
+            "gpt": cached_response,
+            "gpt_v2": cached_response,
+            "gpt_v3": cached_response
         }
     
-    # Генерируем новые варианты
     print(f"Generating new responses for {payload.id} (force={payload.force}, prompt={payload.prompt})")
     responses = ai_responder.generate_multiple_ai_responses(
         item_id=payload.id,
@@ -122,7 +120,6 @@ async def generate_multiple_responses(payload: GenerateResponsePayload):
         advantages=getattr(payload, 'advantages', None),
         pluses=getattr(payload, 'pluses', None),
         minuses=getattr(payload, 'minuses', None),
-        profile=os.getenv('AI_PROFILE', 'gemini')
     )
     
     # НЕ сохраняем в кэш здесь - сохраним только когда пользователь выберет один из вариантов
@@ -155,7 +152,6 @@ async def generate_response(payload: GenerateResponsePayload):
         advantages=getattr(payload, 'advantages', None),
         pluses=getattr(payload, 'pluses', None),
         minuses=getattr(payload, 'minuses', None),
-        profile=os.getenv('AI_PROFILE', 'gemini')
     )
 
     # Always cache the newly generated response, regardless of whether a prompt was used.
