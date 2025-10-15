@@ -384,7 +384,7 @@ body.modal-open {
     flex-direction: column;
     gap: 1rem;
     background-color: rgba(138, 92, 245, 0.05);
-    padding: 0.9rem 1.3rem 0.4rem;
+    padding: 0.9rem 1.3rem;
     border-radius: var(--element-radius);
     margin-bottom: 0;
     border-left: 3px solid var(--accent-color);
@@ -969,7 +969,7 @@ button:active {
     background-color: rgba(10, 14, 23, 0.5);
     border-radius: var(--element-radius);
     border: 1px solid var(--border-color);
-    padding: 0 1rem;
+    padding: 0.75rem 1rem;
     position: relative;
     overflow: hidden;
 }
@@ -985,10 +985,12 @@ button:active {
 .prompt-input {
     border: none;
     background: transparent;
-    padding: 0.75rem 0.5rem 0.75rem 2.5rem;
+    padding: 0 0.5rem 0 2.5rem;
     border-radius: 0;
     width: 100%;
     color: var(--primary-text);
+    line-height: 1.6;
+    height: auto;
 }
 
 /* Стили для textarea с ответом */
