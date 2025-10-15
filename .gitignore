@@ -8,7 +8,4 @@ __pycache__/
 .DS_Store
 venv/
 .venv/
-build/
-dist/
-node_modules/
-
+backend/response_cache.json
