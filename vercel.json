@@ -1,8 +1,8 @@
 {
+  "version": 2,
   "functions": {
-    "api/index.py": {
-      "runtime": "python3.11",
-      "maxDuration": 60
+    "api/**/*.py": {
+      "runtime": "python3.11"
     }
   },
   "rewrites": [
@@ -12,4 +12,3 @@
     { "source": "/(.*)", "destination": "/frontend/$1" }
   ]
 }
-
