@@ -7,7 +7,6 @@
       "memory": 512
     }
   },
-  "builds": [],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index.py" },
     { "source": "/static/(.*)", "destination": "/frontend/static/$1" },
