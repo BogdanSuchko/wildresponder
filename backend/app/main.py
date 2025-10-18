@@ -9,33 +9,62 @@ from . import wb_api
 from . import ai_responder
 from .models import GenerateResponsePayload, Feedback, Question, ReplyPayload
 from typing import List, Dict
+from supabase import create_client, Client
 
 app = FastAPI()
 
 # --- Cache Setup ---
-CACHE_FILE = "response_cache.json"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+
+
+def _init_supabase() -> Client | None:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("Supabase credentials are missing; in-memory cache only.")
+        return None
+
+    try:
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"Failed to initialize Supabase client: {e}")
+        return None
+
+
+supabase = _init_supabase()
 response_cache: Dict[str, str] = {}
 
+
 def load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-            try:
-                content = f.read()
-                if content:
-                    response_cache.update(json.loads(content))
-                print(f"Loaded {len(response_cache)} items from cache.")
-            except json.JSONDecodeError:
-                print("Cache file is empty or corrupted, starting with an empty cache.")
-    else:
-        # Create the file if it doesn't exist
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump({}, f)
-        print("Cache file created.")
+    if not supabase:
+        return
+
+    try:
+        data = supabase.table("responses_cache").select("id, response").execute()
+        if data.data:
+            response_cache.update({entry["id"]: entry["response"] for entry in data.data})
+            print(f"Loaded {len(response_cache)} items from Supabase cache.")
+    except Exception as e:
+        print(f"Failed to load cache from Supabase: {e}")
 
 
-def save_cache():
-    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(response_cache, f, ensure_ascii=False, indent=4)
+def save_cache_entry(item_id: str, response: str):
+    response_cache[item_id] = response
+
+    if supabase:
+        try:
+            supabase.table("responses_cache").upsert({"id": item_id, "response": response}).execute()
+        except Exception as e:
+            print(f"Failed to save cache entry {item_id} to Supabase: {e}")
+
+
+def delete_cache_entry(item_id: str):
+    response_cache.pop(item_id, None)
+
+    if supabase:
+        try:
+            supabase.table("responses_cache").delete().eq("id", item_id).execute()
+        except Exception as e:
+            print(f"Failed to delete cache entry {item_id} from Supabase: {e}")
 
 @app.get("/health")
 async def health():
@@ -58,9 +87,15 @@ async def startup_event():
         pruned_cache = {id: response for id, response in response_cache.items() if id in active_ids}
         
         if len(pruned_cache) < initial_cache_size:
+            removed_ids = [cache_id for cache_id in response_cache.keys() if cache_id not in active_ids]
             response_cache.clear()
             response_cache.update(pruned_cache)
-            save_cache()
+
+            if supabase and removed_ids:
+                try:
+                    supabase.table("responses_cache").delete().in_("id", removed_ids).execute()
+                except Exception as e:
+                    print(f"Failed to delete stale cache entries from Supabase: {e}")
             removed_count = initial_cache_size - len(pruned_cache)
             print(f"Cache pruned. Removed {removed_count} stale entries.")
         else:
@@ -157,8 +192,7 @@ async def generate_response(payload: GenerateResponsePayload):
     # Always cache the newly generated response, regardless of whether a prompt was used.
     # Но не кэшируем ошибки
     if response_text and not response_text.startswith("Ошибка") and not response_text.startswith("API-ключ") and not response_text.startswith("Не удалось"):
-        response_cache[payload.id] = response_text
-        save_cache()
+        save_cache_entry(payload.id, response_text)
         print(f"Updated cache for {payload.id}")
     else:
         print(f"Not caching error response for {payload.id}: {response_text}")
@@ -176,9 +210,7 @@ async def cache_selected_response(payload: dict):
     if not item_id or not selected_response:
         raise HTTPException(status_code=400, detail="Missing id or response")
     
-    # Сохраняем выбранный ответ в кэш
-    response_cache[item_id] = selected_response
-    save_cache()
+    save_cache_entry(item_id, selected_response)
     print(f"Cached user-selected response for {item_id}")
     
     return {"status": "success", "message": "Response cached successfully"}
@@ -212,8 +244,7 @@ async def send_reply(payload: ReplyPayload):
     if success:
         # If the reply was successful, remove the item from the cache
         if payload.id in response_cache:
-            del response_cache[payload.id]
-            save_cache()
+            delete_cache_entry(payload.id)
             print(f"Removed item {payload.id} from cache after successful reply.")
         return {"status": "success", "message": "Reply sent successfully."}
     else:
