@@ -26,7 +26,7 @@ class ProductDetails(BaseModel):
 
 class Feedback(BaseModel):
     id: str
-    text: str
+    text: Optional[str] = ""
     productValuation: int
     createdDate: str
     productDetails: ProductDetails

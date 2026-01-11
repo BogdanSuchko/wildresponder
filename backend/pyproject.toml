@@ -9,8 +9,6 @@ dependencies = [
     "uvicorn[standard]",
     "python-dotenv",
     "requests",
-    "mangum",
-    "supabase",
 ]
 
 [tool.uv]

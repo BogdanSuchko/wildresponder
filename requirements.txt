@@ -1,3 +1,0 @@
--r backend/requirements.txt
-mangum>=0.17.0
-

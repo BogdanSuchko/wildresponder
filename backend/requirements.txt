@@ -4,5 +4,3 @@ python-dotenv
 requests
 httpx
 openai>=1.30.0
-mangum>=0.17.0
-supabase>=2.3.1

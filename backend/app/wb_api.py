@@ -20,31 +20,38 @@ def get_wb_api_headers() -> Dict[str, str]:
 
 def _get_photo_url(nmId: int) -> Optional[str]:
     """
-    Constructs the URL for the product's first image using the sharding logic
-    from the provided parser.
+    Constructs the URL for the product's first image using the sharding logic.
+    Updated with the latest WB basket ranges (as of 2025).
     """
     try:
-        short_id = nmId // 100000
-        basket = ''
-        if 0 <= short_id <= 143: basket = '01'
-        elif 144 <= short_id <= 287: basket = '02'
-        elif 288 <= short_id <= 431: basket = '03'
-        elif 432 <= short_id <= 719: basket = '04'
-        elif 720 <= short_id <= 1007: basket = '05'
-        elif 1008 <= short_id <= 1061: basket = '06'
-        elif 1062 <= short_id <= 1115: basket = '07'
-        elif 1116 <= short_id <= 1169: basket = '08'
-        elif 1170 <= short_id <= 1313: basket = '09'
-        elif 1314 <= short_id <= 1601: basket = '10'
-        elif 1602 <= short_id <= 1655: basket = '11'
-        elif 1656 <= short_id <= 1919: basket = '12'
-        elif 1920 <= short_id <= 2045: basket = '13'
-        elif 2046 <= short_id <= 2189: basket = '14'
-        elif 2190 <= short_id <= 2405: basket = '15'
-        else: basket = '16'
+        vol = nmId // 100000
+        part = nmId // 1000
         
-        url = (f"https://mns-basket-cdn-01.geobasket.ru/vol{short_id}"
-               f"/part{nmId // 1000}/{nmId}/images/tm/1.webp")
+        # Актуальные диапазоны basket-серверов WB
+        if 0 <= vol <= 143: basket = '01'
+        elif 144 <= vol <= 287: basket = '02'
+        elif 288 <= vol <= 431: basket = '03'
+        elif 432 <= vol <= 719: basket = '04'
+        elif 720 <= vol <= 1007: basket = '05'
+        elif 1008 <= vol <= 1061: basket = '06'
+        elif 1062 <= vol <= 1115: basket = '07'
+        elif 1116 <= vol <= 1169: basket = '08'
+        elif 1170 <= vol <= 1313: basket = '09'
+        elif 1314 <= vol <= 1601: basket = '10'
+        elif 1602 <= vol <= 1655: basket = '11'
+        elif 1656 <= vol <= 1919: basket = '12'
+        elif 1920 <= vol <= 2045: basket = '13'
+        elif 2046 <= vol <= 2189: basket = '14'
+        elif 2190 <= vol <= 2405: basket = '15'
+        elif 2406 <= vol <= 2621: basket = '16'
+        elif 2622 <= vol <= 2837: basket = '17'
+        elif 2838 <= vol <= 3053: basket = '18'
+        elif 3054 <= vol <= 3269: basket = '19'
+        elif 3270 <= vol <= 3485: basket = '20'
+        else: basket = '21'  # Для новых товаров за пределами известных диапазонов
+        
+        url = (f"https://basket-{basket}.wbbasket.ru/vol{vol}"
+               f"/part{part}/{nmId}/images/tm/1.webp")
         return url
     except Exception as e:
         print(f"Error generating photo URL for {nmId}: {e}")
