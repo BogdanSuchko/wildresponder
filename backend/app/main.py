@@ -15,12 +15,18 @@ from typing import List, Dict
 app = FastAPI()
 
 # --- Cache Setup ---
-CACHE_FILE = "response_cache.json"
+# Используем директорию cache для кэша, чтобы избежать проблем с volume mapping
+CACHE_DIR = "/app/cache"
+CACHE_FILE = os.path.join(CACHE_DIR, "response_cache.json")
 response_cache: Dict[str, str] = {}
 
 def load_cache():
-    # Проверяем, существует ли путь и является ли он директорией (ошибка при volume mapping)
+    # Убеждаемся, что директория для кэша существует
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    
+    # Проверяем, существует ли файл кэша
     if os.path.exists(CACHE_FILE):
+        # Проверяем, не является ли это директорией (на случай ошибки)
         if os.path.isdir(CACHE_FILE):
             # Если это директория, удаляем её и создаём файл
             print(f"Warning: {CACHE_FILE} is a directory, removing it and creating a file instead.")
