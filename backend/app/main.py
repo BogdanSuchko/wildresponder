@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import json
 import os
+import time
 
 from . import wb_api
 from . import ai_responder
@@ -221,6 +222,130 @@ async def send_reply(payload: ReplyPayload):
             status_code=500, 
             detail="Failed to send reply via Wildberries API."
         )
+
+
+@app.post("/api/auto-reply-5-stars-feedbacks")
+async def auto_reply_5_stars_feedbacks():
+    """
+    Эндпоинт для автоматической обработки всех НЕотвеченных отзывов:
+    1) Генерирует ответы ИИ для всех таких отзывов (любой оценки).
+    2) Кэширует все успешные ответы в response_cache.
+    3) Отправляет ответы в WB ТОЛЬКО для отзывов с оценкой ровно 5 звёзд,
+       соблюдая rate limit WB API: не более 3 запросов в секунду.
+
+    В теле запроса ничего передавать не нужно, достаточно POST-запроса.
+    """
+    print("Starting auto-reply flow for unanswered feedbacks...")
+
+    feedbacks: List[Feedback] = wb_api.get_unanswered_feedbacks()
+    if not feedbacks:
+        return {
+            "status": "ok",
+            "message": "Нет неотвеченных отзывов.",
+            "total_feedbacks": 0,
+            "generated": 0,
+            "replied_5_stars": 0,
+        }
+
+    generated_count = 0
+    cached_count = 0
+    replied_count = 0
+    errors: Dict[str, str] = {}
+
+    # Сначала генерируем ответы для всех отзывов и кладём в кэш
+    # Пропускаем те, для которых уже есть ответ в кэше
+    for fb in feedbacks:
+        item_id = fb.id
+        
+        # Проверяем, есть ли уже ответ в кэше
+        if item_id in response_cache:
+            print(f"Skipping generation for feedback {item_id} (rating={fb.productValuation}): already cached")
+            cached_count += 1
+            continue
+        
+        print(f"Generating AI response for feedback {item_id} (rating={fb.productValuation})")
+
+        response_text = ai_responder.generate_ai_response(
+            item_id=item_id,
+            text=fb.text or "",
+            custom_prompt=None,
+            rating=fb.productValuation,
+            product_name=fb.productDetails.productName,
+            advantages=getattr(fb, "advantages", None),
+            pluses=getattr(fb, "pluses", None),
+            minuses=getattr(fb, "minuses", None),
+        )
+
+        # Повторяем ту же логику, что и в /api/generate-response:
+        # не кэшируем явные ошибки.
+        if response_text and not response_text.startswith("Ошибка") and not response_text.startswith("API-ключ") and not response_text.startswith("Не удалось"):
+            response_cache[item_id] = response_text
+            generated_count += 1
+        else:
+            errors[item_id] = response_text or "Пустой ответ ИИ"
+
+    # Сохраняем кэш со всеми успешно сгенерированными ответами
+    save_cache()
+    print(f"Generated {generated_count} new responses, {cached_count} already cached, out of {len(feedbacks)} total feedbacks")
+
+    # Теперь отвечаем только на отзывы с оценкой ровно 5 звёзд
+    sent_in_current_second = 0
+    second_window_start = time.time()
+
+    for fb in feedbacks:
+        if fb.productValuation != 5:
+            continue
+
+        item_id = fb.id
+        reply_text = response_cache.get(item_id)
+        if not reply_text:
+            # Если по какой-то причине текста нет (например, была ошибка генерации) — пропускаем
+            print(f"Skip sending reply for {item_id}: no cached response")
+            continue
+
+        # rate limit: не более 3 запросов в секунду
+        now = time.time()
+        # если текущий секундный интервал закончился, сбрасываем счётчик
+        if now - second_window_start >= 1:
+            second_window_start = now
+            sent_in_current_second = 0
+
+        if sent_in_current_second >= 3:
+            # Ждём до начала следующего "окна"
+            sleep_time = 1 - (now - second_window_start)
+            if sleep_time > 0:
+                print(f"Rate-limit: sleeping for {sleep_time:.2f} seconds")
+                time.sleep(sleep_time)
+            second_window_start = time.time()
+            sent_in_current_second = 0
+
+        print(f"Sending auto reply for 5⭐ feedback {item_id}")
+        success = wb_api.reply_to_item(
+            item_id=item_id,
+            text=reply_text,
+            item_type="feedbacks",
+        )
+
+        if success:
+            replied_count += 1
+            sent_in_current_second += 1
+            # После успешного ответа удаляем элемент из кэша, как и в ручном эндпоинте
+            if item_id in response_cache:
+                del response_cache[item_id]
+                save_cache()
+                print(f"Removed item {item_id} from cache after auto-reply.")
+        else:
+            errors[item_id] = "Не удалось отправить ответ в WB"
+
+    return {
+        "status": "ok",
+        "message": "Автообработка отзывов завершена.",
+        "total_feedbacks": len(feedbacks),
+        "generated": generated_count,
+        "cached": cached_count,
+        "replied_5_stars": replied_count,
+        "errors": errors,
+    }
 
 # The Nginx container now handles serving static files and the main index.html.
 # These routes are no longer needed in the FastAPI application when containerized.
