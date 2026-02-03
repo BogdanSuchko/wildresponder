@@ -10,3 +10,4 @@ venv/
 .venv/
 backend/response_cache.json
 backend/cache/
+ALICE_SETUP.md
