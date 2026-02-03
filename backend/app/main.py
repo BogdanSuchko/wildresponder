@@ -271,6 +271,16 @@ async def auto_reply_5_stars_feedbacks(request: Request):
 
     feedbacks: List[Feedback] = wb_api.get_unanswered_feedbacks()
     if not feedbacks:
+        # Если это запрос от Алисы, верни ответ в формате Алисы
+        if is_alice_request:
+            return {
+                "response": {
+                    "text": "Нет новых неотвеченных отзывов.",
+                    "end_session": False
+                },
+                "version": "1.0"
+            }
+        # Иначе верни обычный JSON
         return {
             "status": "ok",
             "message": "Нет неотвеченных отзывов.",
