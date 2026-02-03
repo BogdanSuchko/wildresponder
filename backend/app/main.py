@@ -260,11 +260,14 @@ async def auto_reply_5_stars_feedbacks(request: Request):
     # Проверяем, это запрос от Алисы или обычный POST
     is_alice_request = False
     try:
-        body = await request.json()
-        # Алиса отправляет запрос с полями "request" и "session"
-        if body and isinstance(body, dict) and "request" in body and "session" in body:
-            is_alice_request = True
-            print(f"Detected Alice request: {body.get('request', {}).get('command', 'unknown')}")
+        # Проверяем, есть ли тело запроса
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body = await request.json()
+            # Алиса отправляет запрос с полями "request" и "session"
+            if body and isinstance(body, dict) and "request" in body and "session" in body:
+                is_alice_request = True
+                print(f"Detected Alice request: {body.get('request', {}).get('command', 'unknown')}")
     except Exception as e:
         # Если нет тела запроса или это не JSON - это обычный POST
         print(f"Not an Alice request (no JSON body or error): {e}")
