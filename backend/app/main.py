@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -10,7 +10,7 @@ import shutil
 from . import wb_api
 from . import ai_responder
 from .models import GenerateResponsePayload, Feedback, Question, ReplyPayload
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 app = FastAPI()
 
@@ -247,7 +247,7 @@ async def send_reply(payload: ReplyPayload):
 
 
 @app.post("/api/auto-reply-5-stars-feedbacks")
-async def auto_reply_5_stars_feedbacks():
+async def auto_reply_5_stars_feedbacks(request: Request):
     """
     Эндпоинт для автоматической обработки всех НЕотвеченных отзывов:
     1) Генерирует ответы ИИ для всех таких отзывов (любой оценки).
@@ -255,8 +255,18 @@ async def auto_reply_5_stars_feedbacks():
     3) Отправляет ответы в WB ТОЛЬКО для отзывов с оценкой ровно 5 звёзд,
        соблюдая rate limit WB API: не более 3 запросов в секунду.
 
-    В теле запроса ничего передавать не нужно, достаточно POST-запроса.
+    Может работать как простой POST (для навыка Алисы) или с телом запроса от Алисы.
     """
+    # Проверяем, это запрос от Алисы или обычный POST
+    is_alice_request = False
+    try:
+        body = await request.json()
+        if body and "request" in body and "session" in body:
+            is_alice_request = True
+    except:
+        # Если нет тела запроса или это не JSON - это обычный POST
+        pass
+    
     print("Starting auto-reply flow for unanswered feedbacks...")
 
     feedbacks: List[Feedback] = wb_api.get_unanswered_feedbacks()
@@ -359,7 +369,7 @@ async def auto_reply_5_stars_feedbacks():
         else:
             errors[item_id] = "Не удалось отправить ответ в WB"
 
-    return {
+    result = {
         "status": "ok",
         "message": "Автообработка отзывов завершена.",
         "total_feedbacks": len(feedbacks),
@@ -368,6 +378,36 @@ async def auto_reply_5_stars_feedbacks():
         "replied_5_stars": replied_count,
         "errors": errors,
     }
+    
+    # Если это запрос от Алисы, верни ответ в формате Алисы
+    if is_alice_request:
+        # Формируем текст ответа для Алисы
+        if result["total_feedbacks"] == 0:
+            text = "Нет новых неотвеченных отзывов."
+        else:
+            text = (
+                f"Обработка завершена. "
+                f"Всего отзывов: {result['total_feedbacks']}. "
+            )
+            if result["generated"] > 0:
+                text += f"Сгенерировано новых ответов: {result['generated']}. "
+            if result["cached"] > 0:
+                text += f"Уже было в кэше: {result['cached']}. "
+            if result["replied_5_stars"] > 0:
+                text += f"Отправлено ответов на 5-звёздочные отзывы: {result['replied_5_stars']}."
+            else:
+                text += "Нет 5-звёздочных отзывов для ответа."
+        
+        return {
+            "response": {
+                "text": text,
+                "end_session": False
+            },
+            "version": "1.0"
+        }
+    
+    # Иначе верни обычный JSON
+    return result
 
 # The Nginx container now handles serving static files and the main index.html.
 # These routes are no longer needed in the FastAPI application when containerized.
