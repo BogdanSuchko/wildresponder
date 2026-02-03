@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse
 import json
 import os
 import time
+import shutil
 
 from . import wb_api
 from . import ai_responder
@@ -18,15 +19,30 @@ CACHE_FILE = "response_cache.json"
 response_cache: Dict[str, str] = {}
 
 def load_cache():
+    # Проверяем, существует ли путь и является ли он директорией (ошибка при volume mapping)
     if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-            try:
+        if os.path.isdir(CACHE_FILE):
+            # Если это директория, удаляем её и создаём файл
+            print(f"Warning: {CACHE_FILE} is a directory, removing it and creating a file instead.")
+            shutil.rmtree(CACHE_FILE)
+            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+            print("Cache file created.")
+            return
+        
+        # Если это файл, пытаемся его прочитать
+        try:
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
                 content = f.read()
                 if content:
                     response_cache.update(json.loads(content))
-                print(f"Loaded {len(response_cache)} items from cache.")
-            except json.JSONDecodeError:
-                print("Cache file is empty or corrupted, starting with an empty cache.")
+                    print(f"Loaded {len(response_cache)} items from cache.")
+                else:
+                    print("Cache file is empty, starting with an empty cache.")
+        except json.JSONDecodeError:
+            print("Cache file is corrupted, starting with an empty cache.")
+        except Exception as e:
+            print(f"Error reading cache file: {e}, starting with an empty cache.")
     else:
         # Create the file if it doesn't exist
         with open(CACHE_FILE, 'w', encoding='utf-8') as f:
