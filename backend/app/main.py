@@ -261,10 +261,13 @@ async def auto_reply_5_stars_feedbacks(request: Request):
     is_alice_request = False
     try:
         body = await request.json()
-        if body and "request" in body and "session" in body:
+        # Алиса отправляет запрос с полями "request" и "session"
+        if body and isinstance(body, dict) and "request" in body and "session" in body:
             is_alice_request = True
-    except:
+            print(f"Detected Alice request: {body.get('request', {}).get('command', 'unknown')}")
+    except Exception as e:
         # Если нет тела запроса или это не JSON - это обычный POST
+        print(f"Not an Alice request (no JSON body or error): {e}")
         pass
     
     print("Starting auto-reply flow for unanswered feedbacks...")
@@ -408,13 +411,15 @@ async def auto_reply_5_stars_feedbacks(request: Request):
             else:
                 text += "Нет 5-звёздочных отзывов для ответа."
         
-        return {
+        alice_response = {
             "response": {
                 "text": text,
                 "end_session": False
             },
             "version": "1.0"
         }
+        print(f"Returning Alice response: {alice_response}")
+        return alice_response
     
     # Иначе верни обычный JSON
     return result
