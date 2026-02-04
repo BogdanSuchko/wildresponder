@@ -21,6 +21,14 @@ CACHE_DIR = "/app/cache"
 CACHE_FILE = os.path.join(CACHE_DIR, "response_cache.json")
 response_cache: Dict[str, str] = {}
 
+# --- Job Results Storage ---
+# Храним результаты фоновых задач для Алисы
+job_results: Dict[str, Dict[str, any]] = {}  # job_id -> {status, result, timestamp}
+
+# --- Job Results Storage ---
+# Храним результаты фоновых задач для Алисы
+job_results: Dict[str, Dict[str, any]] = {}  # job_id -> {status, result, timestamp}
+
 def load_cache():
     # Убеждаемся, что директория для кэша существует
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -116,7 +124,8 @@ def _is_exit_command(command: str, intents: Dict[str, object]) -> bool:
 def _help_text() -> str:
     return (
         "Я могу:\n"
-        "- ответь на отзывы (отправлю ответы только на 5★)\n"
+        "- ответь на отзывы (отправлю ответы только на 5 звезд, дам номер задачи)\n"
+        "- статус задачи [номер] (узнать результат обработки)\n"
         "- сколько отзывов\n"
         "- сколько вопросов\n"
         "- процент 5 звезд\n"
@@ -128,7 +137,7 @@ def _run_auto_reply_5_stars_feedbacks_sync() -> Dict[str, object]:
     """
     Синхронная (долго выполняющаяся) обработка:
     - генерирует ответы для всех неотвеченных отзывов (кэширует, если нет в кэше)
-    - отправляет ответы только на 5★ с rate limit 3 rps
+    - отправляет ответы только на 5 звезд с rate limit 3 rps
     """
     print("Starting auto-reply flow for unanswered feedbacks (sync job)...")
 
@@ -233,10 +242,32 @@ def _run_auto_reply_job(job_id: str) -> None:
     """Фоновая задача для Алисы."""
     try:
         print(f"[job {job_id}] started")
+        job_results[job_id] = {
+            "status": "running",
+            "result": None,
+            "timestamp": time.time()
+        }
         result = _run_auto_reply_5_stars_feedbacks_sync()
         print(f"[job {job_id}] finished: {result}")
+        
+        # Сохраняем результат
+        job_results[job_id] = {
+            "status": "completed",
+            "result": result,
+            "timestamp": time.time()
+        }
     except Exception as e:
         print(f"[job {job_id}] failed: {e}")
+        job_results[job_id] = {
+            "status": "failed",
+            "result": {"error": str(e)},
+            "timestamp": time.time()
+        }
+        job_results[job_id] = {
+            "status": "failed",
+            "result": {"error": str(e)},
+            "timestamp": time.time()
+        }
 
 @app.get("/health")
 async def health():
@@ -380,26 +411,97 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
     if _is_exit_command(command, intents):
         return _alice_response("Хорошо, выхожу.", end_session=True)
 
-    # Автоответ
+    # Автоответ (только для этой команды используем фоновые задачи)
     if "ответь на отзыв" in command or "ответь на отзывы" in command or "обработай отзывы" in command:
-        job_id = uuid.uuid4().hex[:10]
+        global job_counter
+        job_counter += 1
+        job_id = str(job_counter)
+        
         background_tasks.add_task(_run_auto_reply_job, job_id)
         return _alice_response(
-            f"Запускаю обработку отзывов. Я отвечу только на 5-звёздочные. Номер задачи: {job_id}.",
+            f"Запускаю обработку отзывов. Номер задачи: {job_id}. Спроси 'статус задачи {job_id}' чтобы узнать результат.",
             end_session=False,
         )
+    
+    # Проверка статуса задачи (только для задач обработки отзывов)
+    if "статус задачи" in command or "результат задачи" in command:
+        import re
+        # Ищем номер задачи (просто цифра)
+        job_id_match = re.search(r'\b(\d+)\b', command)
+        if job_id_match:
+            job_id = job_id_match.group(1)
+            if job_id in job_results:
+                job_data = job_results[job_id]
+                status = job_data.get("status", "unknown")
+                
+                if status == "running":
+                    return _alice_response(f"Задача {job_id} ещё выполняется. Подождите немного.", end_session=False)
+                elif status == "completed":
+                    result = job_data.get("result", {})
+                    total = result.get("total_feedbacks", 0)
+                    generated = result.get("generated", 0)
+                    cached = result.get("cached", 0)
+                    replied = result.get("replied_5_stars", 0)
+                    
+                    text = f"Задача {job_id} завершена. Всего отзывов: {total}. "
+                    if generated > 0:
+                        text += f"Сгенерировано новых: {generated}. "
+                    if cached > 0:
+                        text += f"В кэше: {cached}. "
+                    if replied > 0:
+                        text += f"Отправлено ответов на 5-звёздочные: {replied}."
+                    else:
+                        text += "Нет 5-звёздочных отзывов для ответа."
+                    
+                    return _alice_response(text, end_session=False)
+                elif status == "failed":
+                    return _alice_response(f"Задача {job_id} завершилась с ошибкой.", end_session=False)
+            else:
+                return _alice_response(f"Задача {job_id} не найдена.", end_session=False)
+        else:
+            # Если номер задачи не указан, показываем последнюю завершённую
+            latest_job = None
+            latest_number = 0
+            for jid, job_data in job_results.items():
+                if job_data.get("status") == "completed":
+                    try:
+                        jid_num = int(jid)
+                        if jid_num > latest_number:
+                            latest_job = (jid, job_data)
+                            latest_number = jid_num
+                    except ValueError:
+                        continue
+            
+            if latest_job:
+                jid, job_data = latest_job
+                result = job_data.get("result", {})
+                total = result.get("total_feedbacks", 0)
+                generated = result.get("generated", 0)
+                cached = result.get("cached", 0)
+                replied = result.get("replied_5_stars", 0)
+                
+                text = (
+                    f"Последняя задача {jid}: "
+                    f"всего отзывов {total}, "
+                    f"сгенерировано {generated}, "
+                    f"в кэше {cached}, "
+                    f"отправлено ответов {replied}."
+                )
+                return _alice_response(text, end_session=False)
+            else:
+                return _alice_response("Нет завершённых задач. Укажите номер задачи или запустите обработку.", end_session=False)
 
-    # Статистика
-    feedbacks = wb_api.get_unanswered_feedbacks()
-    questions = wb_api.get_unanswered_questions()
-
+    # Статистика (выполняется сразу, без фоновых задач)
     if "сколько" in command and "отзыв" in command:
+        feedbacks = wb_api.get_unanswered_feedbacks()
         return _alice_response(f"Неотвеченных отзывов: {len(feedbacks)}.", end_session=False)
 
     if "сколько" in command and "вопрос" in command:
+        questions = wb_api.get_unanswered_questions()
         return _alice_response(f"Неотвеченных вопросов: {len(questions)}.", end_session=False)
 
     if ("процент" in command or "%" in command or "сколько" in command) and ("5" in command or "пять" in command or "пятизв" in command):
+        feedbacks = wb_api.get_unanswered_feedbacks()
         total = len(feedbacks)
         if total == 0:
             return _alice_response("Сейчас нет неотвеченных отзывов, поэтому процент посчитать нельзя.", end_session=False)
