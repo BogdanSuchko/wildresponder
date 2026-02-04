@@ -24,10 +24,7 @@ response_cache: Dict[str, str] = {}
 # --- Job Results Storage ---
 # Храним результаты фоновых задач для Алисы
 job_results: Dict[str, Dict[str, any]] = {}  # job_id -> {status, result, timestamp}
-
-# --- Job Results Storage ---
-# Храним результаты фоновых задач для Алисы
-job_results: Dict[str, Dict[str, any]] = {}  # job_id -> {status, result, timestamp}
+job_counter: int = 0  # Счётчик для номеров задач (1, 2, 3...)
 
 def load_cache():
     # Убеждаемся, что директория для кэша существует
