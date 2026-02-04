@@ -73,12 +73,36 @@ def _extract_alice_command_and_intents(body: Dict[str, object]) -> tuple[str, Di
     """
     Возвращает: command_lower, intents_dict, user_id
     """
-    req = (body or {}).get("request") or {}
-    sess = (body or {}).get("session") or {}
-    command = (req.get("command") or "").strip().lower()
-    intents = ((req.get("nlu") or {}).get("intents") or {})
-    user_id = sess.get("user_id") or ""
-    return command, intents, user_id
+    try:
+        if not isinstance(body, dict):
+            print(f"WARNING: body is not dict in _extract_alice_command_and_intents: {type(body)}")
+            return "", {}, ""
+        
+        req = body.get("request")
+        if not isinstance(req, dict):
+            req = {}
+        
+        sess = body.get("session")
+        if not isinstance(sess, dict):
+            sess = {}
+        
+        command = str(req.get("command", "")).strip().lower()
+        
+        nlu = req.get("nlu")
+        if isinstance(nlu, dict):
+            intents = nlu.get("intents") or {}
+        else:
+            intents = {}
+        
+        if not isinstance(intents, dict):
+            intents = {}
+        
+        user_id = str(sess.get("user_id", ""))
+        
+        return command, intents, user_id
+    except Exception as e:
+        print(f"ERROR in _extract_alice_command_and_intents: {e}")
+        return "", {}, ""
 
 
 def _is_exit_command(command: str, intents: Dict[str, object]) -> bool:
@@ -288,17 +312,65 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
     - Неизвестная команда: подсказка
     - Выход: "хватит/стоп/выйти" или интент YANDEX.REJECT
     """
+    # Логируем все входящие запросы для отладки
+    print(f"=== ALICE WEBHOOK REQUEST ===")
+    print(f"Method: {request.method}")
+    print(f"Headers: {dict(request.headers)}")
+    
+    # Проверяем content-type
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" not in content_type:
+        print(f"WARNING: Invalid content-type: {content_type}")
+        # Если это не JSON, но запрос от Алисы - всё равно попробуем обработать
+        if not content_type:
+            print("No content-type, trying to parse as JSON anyway")
+    
+    # Пытаемся получить тело запроса
+    body = None
     try:
-        body = await request.json()
-    except Exception:
-        return _alice_response("Неверный запрос.", end_session=True)
-
-    # Launch event
-    req = (body or {}).get("request") or {}
-    if req.get("type") == "Launch":
+        # Проверяем, есть ли тело запроса
+        body_bytes = await request.body()
+        if not body_bytes:
+            print("WARNING: Empty request body")
+            return _alice_response("Привет! " + _help_text(), end_session=False)
+        
+        body = json.loads(body_bytes.decode('utf-8'))
+        print(f"Parsed body: {json.dumps(body, ensure_ascii=False, indent=2)}")
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Failed to parse JSON: {e}")
+        print(f"Raw body: {body_bytes.decode('utf-8', errors='ignore')[:500]}")
+        return _alice_response("Ошибка обработки запроса. Попробуйте ещё раз.", end_session=False)
+    except Exception as e:
+        print(f"ERROR: Unexpected error parsing request: {e}")
+        return _alice_response("Ошибка обработки запроса. Попробуйте ещё раз.", end_session=False)
+    
+    if not body:
+        print("WARNING: Body is None or empty")
         return _alice_response("Привет! " + _help_text(), end_session=False)
 
-    command, intents, user_id = _extract_alice_command_and_intents(body)
+    # Проверяем структуру запроса
+    if not isinstance(body, dict):
+        print(f"ERROR: Body is not a dict: {type(body)}")
+        return _alice_response("Ошибка формата запроса. Попробуйте ещё раз.", end_session=False)
+    
+    # Launch event
+    req = body.get("request") or {}
+    if not isinstance(req, dict):
+        req = {}
+    
+    if req.get("type") == "Launch":
+        print("Launch event detected")
+        return _alice_response("Привет! " + _help_text(), end_session=False)
+
+    try:
+        command, intents, user_id = _extract_alice_command_and_intents(body)
+        print(f"Extracted - command: '{command}', intents: {intents}, user_id: {user_id}")
+    except Exception as e:
+        print(f"ERROR extracting command/intents: {e}")
+        # Если не удалось извлечь - пробуем обработать как есть
+        command = req.get("command", "").lower() if isinstance(req, dict) else ""
+        intents = {}
+        user_id = ""
 
     # Встроенная помощь
     if "YANDEX.HELP" in intents:
