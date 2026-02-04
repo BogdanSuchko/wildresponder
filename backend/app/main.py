@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -6,6 +6,7 @@ import json
 import os
 import time
 import shutil
+import uuid
 
 from . import wb_api
 from . import ai_responder
@@ -59,6 +60,159 @@ def load_cache():
 def save_cache():
     with open(CACHE_FILE, 'w', encoding='utf-8') as f:
         json.dump(response_cache, f, ensure_ascii=False, indent=4)
+
+
+def _alice_response(text: str, end_session: bool = False) -> Dict[str, object]:
+    return {
+        "response": {"text": text, "end_session": end_session},
+        "version": "1.0",
+    }
+
+
+def _extract_alice_command_and_intents(body: Dict[str, object]) -> tuple[str, Dict[str, object], str]:
+    """
+    Возвращает: command_lower, intents_dict, user_id
+    """
+    req = (body or {}).get("request") or {}
+    sess = (body or {}).get("session") or {}
+    command = (req.get("command") or "").strip().lower()
+    intents = ((req.get("nlu") or {}).get("intents") or {})
+    user_id = sess.get("user_id") or ""
+    return command, intents, user_id
+
+
+def _is_exit_command(command: str, intents: Dict[str, object]) -> bool:
+    # Встроенные интенты Яндекса + простые слова-выходы
+    if "YANDEX.REJECT" in intents:
+        return True
+    exit_words = ["хватит", "выйти", "выход", "стоп", "закрой", "закрыть", "отмена"]
+    return any(w in command for w in exit_words)
+
+
+def _help_text() -> str:
+    return (
+        "Я могу:\n"
+        "- ответь на отзывы (отправлю ответы только на 5★)\n"
+        "- сколько отзывов\n"
+        "- сколько вопросов\n"
+        "- процент 5 звезд\n"
+        "Скажи команду."
+    )
+
+
+def _run_auto_reply_5_stars_feedbacks_sync() -> Dict[str, object]:
+    """
+    Синхронная (долго выполняющаяся) обработка:
+    - генерирует ответы для всех неотвеченных отзывов (кэширует, если нет в кэше)
+    - отправляет ответы только на 5★ с rate limit 3 rps
+    """
+    print("Starting auto-reply flow for unanswered feedbacks (sync job)...")
+
+    feedbacks: List[Feedback] = wb_api.get_unanswered_feedbacks()
+    if not feedbacks:
+        return {
+            "status": "ok",
+            "message": "Нет неотвеченных отзывов.",
+            "total_feedbacks": 0,
+            "generated": 0,
+            "cached": 0,
+            "replied_5_stars": 0,
+            "errors": {},
+        }
+
+    generated_count = 0
+    cached_count = 0
+    replied_count = 0
+    errors: Dict[str, str] = {}
+
+    # Сначала генерируем ответы для всех отзывов и кладём в кэш
+    # Пропускаем те, для которых уже есть ответ в кэше
+    for fb in feedbacks:
+        item_id = fb.id
+
+        if item_id in response_cache:
+            cached_count += 1
+            continue
+
+        response_text = ai_responder.generate_ai_response(
+            item_id=item_id,
+            text=fb.text or "",
+            custom_prompt=None,
+            rating=fb.productValuation,
+            product_name=fb.productDetails.productName,
+            advantages=getattr(fb, "advantages", None),
+            pluses=getattr(fb, "pluses", None),
+            minuses=getattr(fb, "minuses", None),
+        )
+
+        if response_text and not response_text.startswith("Ошибка") and not response_text.startswith("API-ключ") and not response_text.startswith("Не удалось"):
+            response_cache[item_id] = response_text
+            generated_count += 1
+        else:
+            errors[item_id] = response_text or "Пустой ответ ИИ"
+
+    save_cache()
+    print(f"Generated {generated_count} new responses, {cached_count} already cached, out of {len(feedbacks)} total feedbacks")
+
+    # Теперь отвечаем только на отзывы с оценкой ровно 5 звёзд
+    sent_in_current_second = 0
+    second_window_start = time.time()
+
+    for fb in feedbacks:
+        if fb.productValuation != 5:
+            continue
+
+        item_id = fb.id
+        reply_text = response_cache.get(item_id)
+        if not reply_text:
+            continue
+
+        now = time.time()
+        if now - second_window_start >= 1:
+            second_window_start = now
+            sent_in_current_second = 0
+
+        if sent_in_current_second >= 3:
+            sleep_time = 1 - (now - second_window_start)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            second_window_start = time.time()
+            sent_in_current_second = 0
+
+        success = wb_api.reply_to_item(
+            item_id=item_id,
+            text=reply_text,
+            item_type="feedbacks",
+        )
+
+        if success:
+            replied_count += 1
+            sent_in_current_second += 1
+            if item_id in response_cache:
+                del response_cache[item_id]
+                save_cache()
+        else:
+            errors[item_id] = "Не удалось отправить ответ в WB"
+
+    return {
+        "status": "ok",
+        "message": "Автообработка отзывов завершена.",
+        "total_feedbacks": len(feedbacks),
+        "generated": generated_count,
+        "cached": cached_count,
+        "replied_5_stars": replied_count,
+        "errors": errors,
+    }
+
+
+def _run_auto_reply_job(job_id: str) -> None:
+    """Фоновая задача для Алисы."""
+    try:
+        print(f"[job {job_id}] started")
+        result = _run_auto_reply_5_stars_feedbacks_sync()
+        print(f"[job {job_id}] finished: {result}")
+    except Exception as e:
+        print(f"[job {job_id}] failed: {e}")
 
 @app.get("/health")
 async def health():
@@ -118,105 +272,71 @@ async def get_feedbacks():
 async def get_questions():
     return wb_api.get_unanswered_questions()
 
-@app.post("/api/alice-stats")
-async def alice_stats(request: Request):
+@app.post("/api/alice-webhook")
+async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
     """
-    Эндпоинт для получения статистики по отзывам и вопросам для Алисы.
-    Обрабатывает команды:
-    - "сколько отзывов" / "сколько отзывов всего"
-    - "сколько вопросов" / "сколько вопросов всего"
-    - "сколько 5 звезд" / "сколько пятизвёздочных" / "процент 5 звезд"
+    Единый webhook для навыка Алисы.
+
+    Поведение:
+    - Launch: приветствие + список команд
+    - Help: список команд
+    - Команды:
+        - "ответь на отзывы" (запускает фоновой job, отвечает сразу)
+        - "сколько отзывов"
+        - "сколько вопросов"
+        - "процент 5 звезд" / "сколько 5 звезд"
+    - Неизвестная команда: подсказка
+    - Выход: "хватит/стоп/выйти" или интент YANDEX.REJECT
     """
-    is_alice_request = False
-    command = ""
-    user_id = None
-    
-    # ВРЕМЕННО: разрешённые user_id
-    allowed_user_ids = [
-        # Добавь сюда свой user_id после первого вызова
-    ]
-    
     try:
-        content_type = request.headers.get("content-type", "")
-        if "application/json" in content_type:
-            body = await request.json()
-            if body and isinstance(body, dict) and "request" in body and "session" in body:
-                session = body.get("session", {})
-                user_id = session.get("user_id", "")
-                request_data = body.get("request", {})
-                command = request_data.get("command", "").lower()
-                
-                print(f"=== ALICE STATS REQUEST ===")
-                print(f"User ID: {user_id}")
-                print(f"Command: {command}")
-                print(f"===========================")
-                
-                # Проверка доступа
-                if allowed_user_ids:
-                    if user_id not in allowed_user_ids:
-                        return {
-                            "response": {
-                                "text": "Извините, у вас нет доступа к этому навыку.",
-                                "end_session": True
-                            },
-                            "version": "1.0"
-                        }
-                
-                is_alice_request = True
-    except Exception as e:
-        print(f"Error parsing Alice request: {e}")
-        pass
-    
-    if not is_alice_request:
-        return {"error": "This endpoint is for Alice only"}
-    
-    # Получаем данные
+        body = await request.json()
+    except Exception:
+        return _alice_response("Неверный запрос.", end_session=True)
+
+    # Launch event
+    req = (body or {}).get("request") or {}
+    if req.get("type") == "Launch":
+        return _alice_response("Привет! " + _help_text(), end_session=False)
+
+    command, intents, user_id = _extract_alice_command_and_intents(body)
+
+    # Встроенная помощь
+    if "YANDEX.HELP" in intents:
+        return _alice_response(_help_text(), end_session=False)
+
+    # Выход
+    if _is_exit_command(command, intents):
+        return _alice_response("Хорошо, выхожу.", end_session=True)
+
+    # Автоответ
+    if "ответь на отзыв" in command or "ответь на отзывы" in command or "обработай отзывы" in command:
+        job_id = uuid.uuid4().hex[:10]
+        background_tasks.add_task(_run_auto_reply_job, job_id)
+        return _alice_response(
+            f"Запускаю обработку отзывов. Я отвечу только на 5-звёздочные. Номер задачи: {job_id}.",
+            end_session=False,
+        )
+
+    # Статистика
     feedbacks = wb_api.get_unanswered_feedbacks()
     questions = wb_api.get_unanswered_questions()
-    
-    # Определяем команду и формируем ответ
-    response_text = ""
-    
-    if "отзыв" in command and ("сколько" in command or "сколько" in command):
-        # Сколько отзывов всего
-        count = len(feedbacks)
-        response_text = f"Всего неотвеченных отзывов: {count}."
-        
-    elif "вопрос" in command and ("сколько" in command or "сколько" in command):
-        # Сколько вопросов всего
-        count = len(questions)
-        response_text = f"Всего неотвеченных вопросов: {count}."
-        
-    elif ("5" in command or "пять" in command or "пятизвёздочн" in command or "пятизвездочн" in command) and ("сколько" in command or "процент" in command or "%" in command):
-        # Сколько/процент 5-звёздочных отзывов
+
+    if "сколько" in command and "отзыв" in command:
+        return _alice_response(f"Неотвеченных отзывов: {len(feedbacks)}.", end_session=False)
+
+    if "сколько" in command and "вопрос" in command:
+        return _alice_response(f"Неотвеченных вопросов: {len(questions)}.", end_session=False)
+
+    if ("процент" in command or "%" in command or "сколько" in command) and ("5" in command or "пять" in command or "пятизв" in command):
         total = len(feedbacks)
         if total == 0:
-            response_text = "Нет отзывов для анализа."
-        else:
-            five_star_count = sum(1 for fb in feedbacks if fb.productValuation == 5)
-            percentage = round((five_star_count / total) * 100)
-            response_text = f"Из {total} отзывов {five_star_count} имеют оценку 5 звёзд. Это {percentage} процентов."
-            
-    else:
-        # Неизвестная команда - показываем общую статистику
-        feedbacks_count = len(feedbacks)
-        questions_count = len(questions)
-        five_star_count = sum(1 for fb in feedbacks if fb.productValuation == 5) if feedbacks else 0
-        five_star_percent = round((five_star_count / feedbacks_count) * 100) if feedbacks_count > 0 else 0
-        
-        response_text = (
-            f"Статистика: неотвеченных отзывов {feedbacks_count}, "
-            f"неотвеченных вопросов {questions_count}. "
-            f"Из отзывов {five_star_percent} процентов имеют оценку 5 звёзд."
-        )
-    
-    return {
-        "response": {
-            "text": response_text,
-            "end_session": False
-        },
-        "version": "1.0"
-    }
+            return _alice_response("Сейчас нет неотвеченных отзывов, поэтому процент посчитать нельзя.", end_session=False)
+        five_star_count = sum(1 for fb in feedbacks if fb.productValuation == 5)
+        pct = round((five_star_count / total) * 100)
+        return _alice_response(f"Пять звёзд: {five_star_count} из {total}. Это примерно {pct} процентов.", end_session=False)
+
+    # Фолбэк
+    return _alice_response("Не понял команду. " + _help_text(), end_session=False)
 
 @app.post("/api/generate-multiple-responses")
 async def generate_multiple_responses(payload: GenerateResponsePayload):
@@ -357,205 +477,9 @@ async def auto_reply_5_stars_feedbacks(request: Request):
 
     Может работать как простой POST (для навыка Алисы) или с телом запроса от Алисы.
     """
-    # Проверяем, это запрос от Алисы или обычный POST
-    is_alice_request = False
-    user_id = None
-    
-    # ВРЕМЕННО: разрешённые user_id (пока пусто - доступ открыт для всех)
-    # После первого вызова найди свой user_id в логах и добавь сюда
-    allowed_user_ids = [
-        # Пример: "1234567890abcdef1234567890abcdef"
-        # Добавь сюда свой user_id после первого вызова
-    ]
-    
-    try:
-        # Проверяем, есть ли тело запроса
-        content_type = request.headers.get("content-type", "")
-        if "application/json" in content_type:
-            body = await request.json()
-            # Алиса отправляет запрос с полями "request" и "session"
-            if body and isinstance(body, dict) and "request" in body and "session" in body:
-                session = body.get("session", {})
-                user_id = session.get("user_id", "")
-                
-                # ВАЖНО: Логируем user_id для первого вызова
-                print(f"=== ALICE REQUEST DEBUG ===")
-                print(f"User ID: {user_id}")
-                print(f"Full session: {session}")
-                print(f"Command: {body.get('request', {}).get('command', 'unknown')}")
-                print(f"===========================")
-                
-                # Если указаны разрешённые user_id, проверяем доступ
-                if allowed_user_ids:
-                    if user_id not in allowed_user_ids:
-                        print(f"Access denied for user_id: {user_id}")
-                        return {
-                            "response": {
-                                "text": "Извините, у вас нет доступа к этому навыку.",
-                                "end_session": True
-                            },
-                            "version": "1.0"
-                        }
-                
-                is_alice_request = True
-    except Exception as e:
-        # Если нет тела запроса или это не JSON - это обычный POST
-        print(f"Not an Alice request (no JSON body or error): {e}")
-        pass
-    
-    print("Starting auto-reply flow for unanswered feedbacks...")
-
-    feedbacks: List[Feedback] = wb_api.get_unanswered_feedbacks()
-    if not feedbacks:
-        # Если это запрос от Алисы, верни ответ в формате Алисы
-        if is_alice_request:
-            return {
-                "response": {
-                    "text": "Нет новых неотвеченных отзывов.",
-                    "end_session": False
-                },
-                "version": "1.0"
-            }
-        # Иначе верни обычный JSON
-        return {
-            "status": "ok",
-            "message": "Нет неотвеченных отзывов.",
-            "total_feedbacks": 0,
-            "generated": 0,
-            "replied_5_stars": 0,
-        }
-
-    generated_count = 0
-    cached_count = 0
-    replied_count = 0
-    errors: Dict[str, str] = {}
-
-    # Сначала генерируем ответы для всех отзывов и кладём в кэш
-    # Пропускаем те, для которых уже есть ответ в кэше
-    for fb in feedbacks:
-        item_id = fb.id
-        
-        # Проверяем, есть ли уже ответ в кэше
-        if item_id in response_cache:
-            print(f"Skipping generation for feedback {item_id} (rating={fb.productValuation}): already cached")
-            cached_count += 1
-            continue
-        
-        print(f"Generating AI response for feedback {item_id} (rating={fb.productValuation})")
-
-        response_text = ai_responder.generate_ai_response(
-            item_id=item_id,
-            text=fb.text or "",
-            custom_prompt=None,
-            rating=fb.productValuation,
-            product_name=fb.productDetails.productName,
-            advantages=getattr(fb, "advantages", None),
-            pluses=getattr(fb, "pluses", None),
-            minuses=getattr(fb, "minuses", None),
-        )
-
-        # Повторяем ту же логику, что и в /api/generate-response:
-        # не кэшируем явные ошибки.
-        if response_text and not response_text.startswith("Ошибка") and not response_text.startswith("API-ключ") and not response_text.startswith("Не удалось"):
-            response_cache[item_id] = response_text
-            generated_count += 1
-        else:
-            errors[item_id] = response_text or "Пустой ответ ИИ"
-
-    # Сохраняем кэш со всеми успешно сгенерированными ответами
-    save_cache()
-    print(f"Generated {generated_count} new responses, {cached_count} already cached, out of {len(feedbacks)} total feedbacks")
-
-    # Теперь отвечаем только на отзывы с оценкой ровно 5 звёзд
-    sent_in_current_second = 0
-    second_window_start = time.time()
-
-    for fb in feedbacks:
-        if fb.productValuation != 5:
-            continue
-
-        item_id = fb.id
-        reply_text = response_cache.get(item_id)
-        if not reply_text:
-            # Если по какой-то причине текста нет (например, была ошибка генерации) — пропускаем
-            print(f"Skip sending reply for {item_id}: no cached response")
-            continue
-
-        # rate limit: не более 3 запросов в секунду
-        now = time.time()
-        # если текущий секундный интервал закончился, сбрасываем счётчик
-        if now - second_window_start >= 1:
-            second_window_start = now
-            sent_in_current_second = 0
-
-        if sent_in_current_second >= 3:
-            # Ждём до начала следующего "окна"
-            sleep_time = 1 - (now - second_window_start)
-            if sleep_time > 0:
-                print(f"Rate-limit: sleeping for {sleep_time:.2f} seconds")
-                time.sleep(sleep_time)
-            second_window_start = time.time()
-            sent_in_current_second = 0
-
-        print(f"Sending auto reply for 5⭐ feedback {item_id}")
-        success = wb_api.reply_to_item(
-            item_id=item_id,
-            text=reply_text,
-            item_type="feedbacks",
-        )
-
-        if success:
-            replied_count += 1
-            sent_in_current_second += 1
-            # После успешного ответа удаляем элемент из кэша, как и в ручном эндпоинте
-            if item_id in response_cache:
-                del response_cache[item_id]
-                save_cache()
-                print(f"Removed item {item_id} from cache after auto-reply.")
-        else:
-            errors[item_id] = "Не удалось отправить ответ в WB"
-
-    result = {
-        "status": "ok",
-        "message": "Автообработка отзывов завершена.",
-        "total_feedbacks": len(feedbacks),
-        "generated": generated_count,
-        "cached": cached_count,
-        "replied_5_stars": replied_count,
-        "errors": errors,
-    }
-    
-    # Если это запрос от Алисы, верни ответ в формате Алисы
-    if is_alice_request:
-        # Формируем текст ответа для Алисы
-        if result["total_feedbacks"] == 0:
-            text = "Нет новых неотвеченных отзывов."
-        else:
-            text = (
-                f"Обработка завершена. "
-                f"Всего отзывов: {result['total_feedbacks']}. "
-            )
-            if result["generated"] > 0:
-                text += f"Сгенерировано новых ответов: {result['generated']}. "
-            if result["cached"] > 0:
-                text += f"Уже было в кэше: {result['cached']}. "
-            if result["replied_5_stars"] > 0:
-                text += f"Отправлено ответов на 5-звёздочные отзывы: {result['replied_5_stars']}."
-            else:
-                text += "Нет 5-звёздочных отзывов для ответа."
-        
-        alice_response = {
-            "response": {
-                "text": text,
-                "end_session": False
-            },
-            "version": "1.0"
-        }
-        print(f"Returning Alice response: {alice_response}")
-        return alice_response
-    
-    # Иначе верни обычный JSON
-    return result
+    # Этот эндпоинт оставляем для ручного вызова (curl/браузер).
+    # Для Алисы используйте /api/alice-webhook.
+    return _run_auto_reply_5_stars_feedbacks_sync()
 
 # The Nginx container now handles serving static files and the main index.html.
 # These routes are no longer needed in the FastAPI application when containerized.
