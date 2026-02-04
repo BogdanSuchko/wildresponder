@@ -259,6 +259,15 @@ async def auto_reply_5_stars_feedbacks(request: Request):
     """
     # Проверяем, это запрос от Алисы или обычный POST
     is_alice_request = False
+    user_id = None
+    
+    # ВРЕМЕННО: разрешённые user_id (пока пусто - доступ открыт для всех)
+    # После первого вызова найди свой user_id в логах и добавь сюда
+    allowed_user_ids = [
+        # Пример: "1234567890abcdef1234567890abcdef"
+        # Добавь сюда свой user_id после первого вызова
+    ]
+    
     try:
         # Проверяем, есть ли тело запроса
         content_type = request.headers.get("content-type", "")
@@ -266,8 +275,29 @@ async def auto_reply_5_stars_feedbacks(request: Request):
             body = await request.json()
             # Алиса отправляет запрос с полями "request" и "session"
             if body and isinstance(body, dict) and "request" in body and "session" in body:
+                session = body.get("session", {})
+                user_id = session.get("user_id", "")
+                
+                # ВАЖНО: Логируем user_id для первого вызова
+                print(f"=== ALICE REQUEST DEBUG ===")
+                print(f"User ID: {user_id}")
+                print(f"Full session: {session}")
+                print(f"Command: {body.get('request', {}).get('command', 'unknown')}")
+                print(f"===========================")
+                
+                # Если указаны разрешённые user_id, проверяем доступ
+                if allowed_user_ids:
+                    if user_id not in allowed_user_ids:
+                        print(f"Access denied for user_id: {user_id}")
+                        return {
+                            "response": {
+                                "text": "Извините, у вас нет доступа к этому навыку.",
+                                "end_session": True
+                            },
+                            "version": "1.0"
+                        }
+                
                 is_alice_request = True
-                print(f"Detected Alice request: {body.get('request', {}).get('command', 'unknown')}")
     except Exception as e:
         # Если нет тела запроса или это не JSON - это обычный POST
         print(f"Not an Alice request (no JSON body or error): {e}")
