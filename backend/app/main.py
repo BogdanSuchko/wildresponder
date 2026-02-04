@@ -118,6 +118,106 @@ async def get_feedbacks():
 async def get_questions():
     return wb_api.get_unanswered_questions()
 
+@app.post("/api/alice-stats")
+async def alice_stats(request: Request):
+    """
+    Эндпоинт для получения статистики по отзывам и вопросам для Алисы.
+    Обрабатывает команды:
+    - "сколько отзывов" / "сколько отзывов всего"
+    - "сколько вопросов" / "сколько вопросов всего"
+    - "сколько 5 звезд" / "сколько пятизвёздочных" / "процент 5 звезд"
+    """
+    is_alice_request = False
+    command = ""
+    user_id = None
+    
+    # ВРЕМЕННО: разрешённые user_id
+    allowed_user_ids = [
+        # Добавь сюда свой user_id после первого вызова
+    ]
+    
+    try:
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body = await request.json()
+            if body and isinstance(body, dict) and "request" in body and "session" in body:
+                session = body.get("session", {})
+                user_id = session.get("user_id", "")
+                request_data = body.get("request", {})
+                command = request_data.get("command", "").lower()
+                
+                print(f"=== ALICE STATS REQUEST ===")
+                print(f"User ID: {user_id}")
+                print(f"Command: {command}")
+                print(f"===========================")
+                
+                # Проверка доступа
+                if allowed_user_ids:
+                    if user_id not in allowed_user_ids:
+                        return {
+                            "response": {
+                                "text": "Извините, у вас нет доступа к этому навыку.",
+                                "end_session": True
+                            },
+                            "version": "1.0"
+                        }
+                
+                is_alice_request = True
+    except Exception as e:
+        print(f"Error parsing Alice request: {e}")
+        pass
+    
+    if not is_alice_request:
+        return {"error": "This endpoint is for Alice only"}
+    
+    # Получаем данные
+    feedbacks = wb_api.get_unanswered_feedbacks()
+    questions = wb_api.get_unanswered_questions()
+    
+    # Определяем команду и формируем ответ
+    response_text = ""
+    
+    if "отзыв" in command and ("сколько" in command or "сколько" in command):
+        # Сколько отзывов всего
+        count = len(feedbacks)
+        response_text = f"Всего неотвеченных отзывов: {count}."
+        
+    elif "вопрос" in command and ("сколько" in command or "сколько" in command):
+        # Сколько вопросов всего
+        count = len(questions)
+        response_text = f"Всего неотвеченных вопросов: {count}."
+        
+    elif ("5" in command or "пять" in command or "пятизвёздочн" in command or "пятизвездочн" in command) and ("сколько" in command or "процент" in command or "%" in command):
+        # Сколько/процент 5-звёздочных отзывов
+        total = len(feedbacks)
+        if total == 0:
+            response_text = "Нет отзывов для анализа."
+        else:
+            five_star_count = sum(1 for fb in feedbacks if fb.productValuation == 5)
+            percentage = round((five_star_count / total) * 100)
+            response_text = f"Из {total} отзывов {five_star_count} имеют оценку 5 звёзд. Это {percentage} процентов."
+            
+    else:
+        # Неизвестная команда - показываем общую статистику
+        feedbacks_count = len(feedbacks)
+        questions_count = len(questions)
+        five_star_count = sum(1 for fb in feedbacks if fb.productValuation == 5) if feedbacks else 0
+        five_star_percent = round((five_star_count / feedbacks_count) * 100) if feedbacks_count > 0 else 0
+        
+        response_text = (
+            f"Статистика: неотвеченных отзывов {feedbacks_count}, "
+            f"неотвеченных вопросов {questions_count}. "
+            f"Из отзывов {five_star_percent} процентов имеют оценку 5 звёзд."
+        )
+    
+    return {
+        "response": {
+            "text": response_text,
+            "end_session": False
+        },
+        "version": "1.0"
+    }
+
 @app.post("/api/generate-multiple-responses")
 async def generate_multiple_responses(payload: GenerateResponsePayload):
     print(f"Generating multiple responses for {payload.id}")
