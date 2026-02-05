@@ -120,13 +120,14 @@ def _is_exit_command(command: str, intents: Dict[str, object]) -> bool:
 
 def _help_text() -> str:
     return (
-        "Я могу:\n"
-        "- ответь на отзывы (отправлю ответы только на 5 звезд, дам номер задачи)\n"
-        "- статус задачи [номер] (узнать результат обработки)\n"
-        "- сколько отзывов\n"
-        "- сколько вопросов\n"
-        "- процент 5 звезд\n"
-        "Скажи команду."
+        "Привет! Я помогу тебе управлять отзывами на Wildberries.\n\n"
+        "Вот что я умею:\n"
+        "• Ответить на отзывы — обработаю все неотвеченные отзывы и отправлю ответы на пятизвёздочные\n"
+        "• Статус задачи — скажи номер задачи, чтобы узнать результат\n"
+        "• Сколько отзывов — покажу количество неотвеченных отзывов\n"
+        "• Сколько вопросов — покажу количество неотвеченных вопросов\n"
+        "• Сколько пять звёзд — покажу статистику по пятизвёздочным отзывам\n\n"
+        "Что хочешь сделать?"
     )
 
 
@@ -388,7 +389,7 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
     
     if req.get("type") == "Launch":
         print("Launch event detected")
-        return _alice_response("Привет! " + _help_text(), end_session=False)
+        return _alice_response(_help_text(), end_session=False)
 
     try:
         command, intents, user_id = _extract_alice_command_and_intents(body)
@@ -416,7 +417,8 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
         
         background_tasks.add_task(_run_auto_reply_job, job_id)
         return _alice_response(
-            f"Запускаю обработку отзывов. Номер задачи: {job_id}. Спроси 'статус задачи {job_id}' чтобы узнать результат.",
+            f"Хорошо, начинаю обработку отзывов. Это задача номер {job_id}. "
+            f"Когда закончу, спроси меня: 'статус задачи {job_id}' — и я расскажу результат.",
             end_session=False,
         )
     
@@ -437,18 +439,22 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
                     result = job_data.get("result", {})
                     total = result.get("total_feedbacks", 0)
                     generated = result.get("generated", 0)
-                    cached = result.get("cached", 0)
                     replied = result.get("replied_5_stars", 0)
                     
-                    text = f"Задача {job_id} завершена. Всего отзывов: {total}. "
-                    if generated > 0:
-                        text += f"Сгенерировано новых: {generated}. "
-                    if cached > 0:
-                        text += f"В кэше: {cached}. "
-                    if replied > 0:
-                        text += f"Отправлено ответов на 5-звёздочные: {replied}."
+                    if total == 0:
+                        text = f"Задача {job_id} завершена. Сейчас нет неотвеченных отзывов."
+                    elif replied > 0:
+                        text = (
+                            f"Задача {job_id} завершена! "
+                            f"Обработано отзывов: {total}. "
+                            f"Отправлено ответов на пятизвёздочные отзывы: {replied}."
+                        )
                     else:
-                        text += "Нет 5-звёздочных отзывов для ответа."
+                        text = (
+                            f"Задача {job_id} завершена. "
+                            f"Обработано отзывов: {total}, "
+                            f"но среди них не было пятизвёздочных, поэтому ответы не отправлялись."
+                        )
                     
                     return _alice_response(text, end_session=False)
                 elif status == "failed":
@@ -473,17 +479,20 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
                 jid, job_data = latest_job
                 result = job_data.get("result", {})
                 total = result.get("total_feedbacks", 0)
-                generated = result.get("generated", 0)
-                cached = result.get("cached", 0)
                 replied = result.get("replied_5_stars", 0)
                 
-                text = (
-                    f"Последняя задача {jid}: "
-                    f"всего отзывов {total}, "
-                    f"сгенерировано {generated}, "
-                    f"в кэше {cached}, "
-                    f"отправлено ответов {replied}."
-                )
+                if total == 0:
+                    text = f"Последняя задача {jid} завершена. Неотвеченных отзывов не было."
+                elif replied > 0:
+                    text = (
+                        f"Последняя задача {jid}: обработано {total} отзывов, "
+                        f"отправлено ответов на пятизвёздочные: {replied}."
+                    )
+                else:
+                    text = (
+                        f"Последняя задача {jid}: обработано {total} отзывов, "
+                        f"но среди них не было пятизвёздочных."
+                    )
                 return _alice_response(text, end_session=False)
             else:
                 return _alice_response("Нет завершённых задач. Укажите номер задачи или запустите обработку.", end_session=False)
@@ -491,23 +500,37 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
     # Статистика (выполняется сразу, без фоновых задач)
     if "сколько" in command and "отзыв" in command:
         feedbacks = wb_api.get_unanswered_feedbacks()
-        return _alice_response(f"Неотвеченных отзывов: {len(feedbacks)}.", end_session=False)
+        count = len(feedbacks)
+        if count == 0:
+            return _alice_response("Сейчас нет неотвеченных отзывов. Всё чисто!", end_session=False)
+        return _alice_response(f"У тебя {count} неотвеченных отзывов.", end_session=False)
 
     if "сколько" in command and "вопрос" in command:
         questions = wb_api.get_unanswered_questions()
-        return _alice_response(f"Неотвеченных вопросов: {len(questions)}.", end_session=False)
+        count = len(questions)
+        if count == 0:
+            return _alice_response("Нет неотвеченных вопросов. Всё отлично!", end_session=False)
+        return _alice_response(f"У тебя {count} неотвеченных вопросов.", end_session=False)
 
     if ("процент" in command or "%" in command or "сколько" in command) and ("5" in command or "пять" in command or "пятизв" in command):
         feedbacks = wb_api.get_unanswered_feedbacks()
         total = len(feedbacks)
         if total == 0:
-            return _alice_response("Сейчас нет неотвеченных отзывов, поэтому процент посчитать нельзя.", end_session=False)
+            return _alice_response("Сейчас нет неотвеченных отзывов, поэтому статистику посчитать нельзя.", end_session=False)
         five_star_count = sum(1 for fb in feedbacks if fb.productValuation == 5)
         pct = round((five_star_count / total) * 100)
-        return _alice_response(f"Пять звёзд: {five_star_count} из {total}. Это примерно {pct} процентов.", end_session=False)
+        return _alice_response(
+            f"Среди неотвеченных отзывов: {five_star_count} пятизвёздочных из {total}. "
+            f"Это {pct} процентов.",
+            end_session=False
+        )
 
-    # Фолбэк
-    return _alice_response("Не понял команду. " + _help_text(), end_session=False)
+    # Фолбэк - только если команда не пустая (не Launch)
+    if command:
+        return _alice_response("Извини, не поняла. " + _help_text(), end_session=False)
+    else:
+        # Если команда пустая (например, пользователь просто запустил навык и ничего не сказал)
+        return _alice_response(_help_text(), end_session=False)
 
 @app.post("/api/generate-multiple-responses")
 async def generate_multiple_responses(payload: GenerateResponsePayload):
