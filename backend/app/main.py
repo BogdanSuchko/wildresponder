@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import json
 import os
+import re
 import time
 import shutil
 import uuid
@@ -25,6 +26,10 @@ response_cache: Dict[str, str] = {}
 # Храним результаты фоновых задач для Алисы
 job_results: Dict[str, Dict[str, any]] = {}  # job_id -> {status, result, timestamp}
 job_counter: int = 0  # Счётчик для номеров задач (1, 2, 3...)
+
+# --- Current Feedback List for Reading ---
+# Храним текущий список отзывов для команды "прочитай отзывы"
+current_feedbacks_list: List[Feedback] = []  # Список отзывов для чтения
 
 def load_cache():
     # Убеждаемся, что директория для кэша существует
@@ -124,9 +129,13 @@ def _help_text() -> str:
         "Вот что я умею:\n"
         "• Ответить на отзывы — обработаю все неотвеченные отзывы и отправлю ответы на пятизвёздочные\n"
         "• Статус задачи — скажи номер задачи, чтобы узнать результат\n"
-        "• Сколько отзывов — покажу количество неотвеченных отзывов\n"
+        "• Сколько отзывов — покажу количество неотвеченных отзывов и плохих\n"
         "• Сколько вопросов — покажу количество неотвеченных вопросов\n"
-        "• Сколько пять звёзд — покажу статистику по пятизвёздочным отзывам\n\n"
+        "• Сколько пять звёзд — покажу статистику по пятизвёздочным отзывам\n"
+        "• Какие отзывы остались — покажу список оставшихся отзывов с рейтингами\n"
+        "• Прочитай отзывы — прочитаю все неотвеченные отзывы с деталями\n"
+        "• Ответь на отзыв [номер] — отвечу на конкретный отзыв по номеру\n"
+        "• Ответь на все отзывы — отвечу на все оставшиеся отзывы\n\n"
         "Что хочешь сделать?"
     )
 
@@ -409,7 +418,95 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
     if _is_exit_command(command, intents):
         return _alice_response("Хорошо, выхожу.", end_session=True)
 
+    # Команда "ответь на отзыв [номер]" или "ответь на отзывы [номера]" - отвечает на конкретные отзывы
+    # Проверяем ПЕРЕД автоответом, чтобы не было конфликта
+    if "ответь" in command and "отзыв" in command and ("все" in command or any(char.isdigit() for char in command)):
+        global current_feedbacks_list
+        
+        # Если список отзывов пуст, загружаем заново
+        if not current_feedbacks_list:
+            current_feedbacks_list = wb_api.get_unanswered_feedbacks()
+        
+        if not current_feedbacks_list:
+            return _alice_response("Нет неотвеченных отзывов для ответа.", end_session=False)
+        
+        # Извлекаем номера отзывов из команды
+        numbers = [int(m) for m in re.findall(r'\b(\d+)\b', command)]
+        
+        # Если "ответь на все отзывы" или "ответь на все"
+        if "все" in command:
+            numbers = list(range(1, len(current_feedbacks_list) + 1))
+        
+        if not numbers:
+            return _alice_response("Не указаны номера отзывов. Скажи, например: 'ответь на отзыв 1' или 'ответь на отзывы 1 и 2'.", end_session=False)
+        
+        # Фильтруем номера - только те, что в диапазоне
+        valid_numbers = [n for n in numbers if 1 <= n <= len(current_feedbacks_list)]
+        if not valid_numbers:
+            return _alice_response(f"Номера должны быть от 1 до {len(current_feedbacks_list)}.", end_session=False)
+        
+        # Отвечаем на выбранные отзывы
+        replied_count = 0
+        errors = []
+        
+        for num in valid_numbers:
+            fb = current_feedbacks_list[num - 1]  # Индексация с 0
+            item_id = fb.id
+            
+            # Генерируем ответ, если его нет в кэше
+            if item_id not in response_cache:
+                response_text = ai_responder.generate_ai_response(
+                    item_id=item_id,
+                    text=fb.text or "",
+                    custom_prompt=None,
+                    rating=fb.productValuation,
+                    product_name=fb.productDetails.productName,
+                    advantages=getattr(fb, "advantages", None),
+                    pluses=getattr(fb, "pluses", None),
+                    minuses=getattr(fb, "minuses", None),
+                )
+                
+                if response_text and not response_text.startswith("Ошибка") and not response_text.startswith("API-ключ") and not response_text.startswith("Не удалось"):
+                    response_cache[item_id] = response_text
+                    save_cache()
+                else:
+                    errors.append(f"отзыв {num}")
+                    continue
+            
+            reply_text = response_cache.get(item_id)
+            if not reply_text:
+                errors.append(f"отзыв {num}")
+                continue
+            
+            # Отправляем ответ с rate limiting
+            time.sleep(0.34)  # ~3 запроса в секунду
+            success = wb_api.reply_to_item(
+                item_id=item_id,
+                text=reply_text,
+                item_type="feedbacks",
+            )
+            
+            if success:
+                replied_count += 1
+                if item_id in response_cache:
+                    del response_cache[item_id]
+                    save_cache()
+            else:
+                errors.append(f"отзыв {num}")
+        
+        # Формируем ответ
+        if replied_count == len(valid_numbers):
+            if len(valid_numbers) == 1:
+                return _alice_response(f"Ответ отправлен на отзыв {valid_numbers[0]}.", end_session=False)
+            else:
+                return _alice_response(f"Ответы отправлены на {replied_count} отзывов.", end_session=False)
+        elif replied_count > 0:
+            return _alice_response(f"Отправлено ответов: {replied_count}. Ошибки при отправке: {', '.join(errors)}.", end_session=False)
+        else:
+            return _alice_response(f"Не удалось отправить ответы. Ошибки: {', '.join(errors)}.", end_session=False)
+
     # Автоответ (только для этой команды используем фоновые задачи)
+    # Проверяем ПОСЛЕ проверки на конкретные номера
     if "ответь на отзыв" in command or "ответь на отзывы" in command or "обработай отзывы" in command:
         global job_counter
         job_counter += 1
@@ -424,7 +521,6 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
     
     # Проверка статуса задачи (только для задач обработки отзывов)
     if "статус задачи" in command or "результат задачи" in command:
-        import re
         # Ищем номер задачи (просто цифра)
         job_id_match = re.search(r'\b(\d+)\b', command)
         if job_id_match:
@@ -503,7 +599,13 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
         count = len(feedbacks)
         if count == 0:
             return _alice_response("Сейчас нет неотвеченных отзывов. Всё чисто!", end_session=False)
-        return _alice_response(f"У тебя {count} неотвеченных отзывов.", end_session=False)
+        
+        # Считаем плохие отзывы (ниже 5 звезд)
+        bad_count = sum(1 for fb in feedbacks if fb.productValuation < 5)
+        if bad_count == 0:
+            return _alice_response(f"Всего отзывов: {count}, плохих отзывов нет.", end_session=False)
+        else:
+            return _alice_response(f"Всего отзывов: {count}, плохих отзывов: {bad_count}.", end_session=False)
 
     if "сколько" in command and "вопрос" in command:
         questions = wb_api.get_unanswered_questions()
@@ -518,12 +620,62 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
         if total == 0:
             return _alice_response("Сейчас нет неотвеченных отзывов, поэтому статистику посчитать нельзя.", end_session=False)
         five_star_count = sum(1 for fb in feedbacks if fb.productValuation == 5)
-        pct = round((five_star_count / total) * 100)
         return _alice_response(
-            f"Среди неотвеченных отзывов: {five_star_count} пятизвёздочных из {total}. "
-            f"Это {pct} процентов.",
+            f"Среди неотвеченных отзывов: {five_star_count} пятизвёздочных из {total}.",
             end_session=False
         )
+
+    # Команда "какие отзывы остались" - показывает список оставшихся отзывов с рейтингами
+    if ("какие" in command or "каких" in command) and "отзыв" in command and ("остал" in command or "есть" in command):
+        global current_feedbacks_list
+        current_feedbacks_list = wb_api.get_unanswered_feedbacks()
+        if not current_feedbacks_list:
+            return _alice_response("Нет неотвеченных отзывов.", end_session=False)
+        
+        # Группируем по рейтингам
+        rating_groups: Dict[int, int] = {}
+        for fb in current_feedbacks_list:
+            rating = fb.productValuation
+            rating_groups[rating] = rating_groups.get(rating, 0) + 1
+        
+        parts = []
+        for rating in sorted(rating_groups.keys(), reverse=True):
+            count = rating_groups[rating]
+            if count == 1:
+                parts.append(f"1 отзыв — {rating} звезды" if rating < 5 else "1 отзыв — 5 звёзд")
+            else:
+                parts.append(f"{count} отзыва — {rating} звезды" if rating < 5 else f"{count} отзывов — 5 звёзд")
+        
+        text = f"Осталось {len(current_feedbacks_list)} отзывов: " + ", ".join(parts) + "."
+        return _alice_response(text, end_session=False)
+
+    # Команда "прочитай отзывы" - читает все отзывы по порядку
+    if "прочитай" in command and "отзыв" in command:
+        global current_feedbacks_list
+        current_feedbacks_list = wb_api.get_unanswered_feedbacks()
+        if not current_feedbacks_list:
+            return _alice_response("Нет неотвеченных отзывов для чтения.", end_session=False)
+        
+        # Формируем текст для чтения всех отзывов
+        texts = []
+        for idx, fb in enumerate(current_feedbacks_list, 1):
+            text_parts = [f"Отзыв {idx}."]
+            text_parts.append(f"Товар: {fb.productDetails.productName}.")
+            text_parts.append(f"Оценка: {fb.productValuation} {'звезды' if fb.productValuation < 5 else 'звёзд'}.")
+            
+            if fb.pluses:
+                text_parts.append(f"Плюсы: {fb.pluses}.")
+            if fb.minuses:
+                text_parts.append(f"Минусы: {fb.minuses}.")
+            if fb.text and fb.text.strip():
+                text_parts.append(f"Комментарий: {fb.text}.")
+            else:
+                text_parts.append("Покупатель не оставил комментария.")
+            
+            texts.append(" ".join(text_parts))
+        
+        full_text = " ".join(texts)
+        return _alice_response(full_text, end_session=False)
 
     # Фолбэк - только если команда не пустая (не Launch)
     if command:
