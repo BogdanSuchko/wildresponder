@@ -421,11 +421,9 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
     # Команда "ответь на отзыв [номер]" или "ответь на отзывы [номера]" - отвечает на конкретные отзывы
     # Проверяем ПЕРЕД автоответом, чтобы не было конфликта
     if "ответь" in command and "отзыв" in command and ("все" in command or any(char.isdigit() for char in command)):
-        global current_feedbacks_list
-        
         # Если список отзывов пуст, загружаем заново
         if not current_feedbacks_list:
-            current_feedbacks_list = wb_api.get_unanswered_feedbacks()
+            current_feedbacks_list.extend(wb_api.get_unanswered_feedbacks())
         
         if not current_feedbacks_list:
             return _alice_response("Нет неотвеченных отзывов для ответа.", end_session=False)
@@ -627,8 +625,8 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
 
     # Команда "какие отзывы остались" - показывает список оставшихся отзывов с рейтингами
     if ("какие" in command or "каких" in command) and "отзыв" in command and ("остал" in command or "есть" in command):
-        global current_feedbacks_list
-        current_feedbacks_list = wb_api.get_unanswered_feedbacks()
+        current_feedbacks_list.clear()
+        current_feedbacks_list.extend(wb_api.get_unanswered_feedbacks())
         if not current_feedbacks_list:
             return _alice_response("Нет неотвеченных отзывов.", end_session=False)
         
@@ -651,8 +649,8 @@ async def alice_webhook(request: Request, background_tasks: BackgroundTasks):
 
     # Команда "прочитай отзывы" - читает все отзывы по порядку
     if "прочитай" in command and "отзыв" in command:
-        global current_feedbacks_list
-        current_feedbacks_list = wb_api.get_unanswered_feedbacks()
+        current_feedbacks_list.clear()
+        current_feedbacks_list.extend(wb_api.get_unanswered_feedbacks())
         if not current_feedbacks_list:
             return _alice_response("Нет неотвеченных отзывов для чтения.", end_session=False)
         
