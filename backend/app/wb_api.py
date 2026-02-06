@@ -116,7 +116,7 @@ def get_unanswered_feedbacks() -> List[Feedback]:
         "order": "dateDesc"
     }
     try:
-        response = requests.get(f"{API_BASE_URL}/feedbacks", headers=headers, params=params)
+        response = requests.get(f"{API_BASE_URL}/feedbacks", headers=headers, params=params, timeout=2.0)
         response.raise_for_status()
         data = response.json().get("data", {}).get("feedbacks", [])
 
@@ -157,7 +157,7 @@ def get_unanswered_questions() -> List[Question]:
         "order": "dateDesc"
     }
     try:
-        response = requests.get(f"{API_BASE_URL}/questions", headers=headers, params=params)
+        response = requests.get(f"{API_BASE_URL}/questions", headers=headers, params=params, timeout=2.0)
         response.raise_for_status()
         data = response.json().get("data", {}).get("questions", [])
 
@@ -212,9 +212,9 @@ def reply_to_item(item_id: str, text: str, item_type: str, state: Optional[str] 
         print(f"Payload: {payload}")
         # Use POST for feedback answers, PATCH for questions
         if item_type == 'feedbacks':
-            response = requests.post(url, headers=headers, json=payload)
+            response = requests.post(url, headers=headers, json=payload, timeout=3.0)
         else:
-            response = requests.patch(url, headers=headers, json=payload)
+            response = requests.patch(url, headers=headers, json=payload, timeout=3.0)
             
         print(f"Response status: {response.status_code}")
         print(f"Response body: {response.text}")
